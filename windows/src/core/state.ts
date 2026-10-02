@@ -92,6 +92,12 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  /**
+   * Base URL of a custom provider (a local router, a company proxy). Empty means
+   * "talk to api.anthropic.com". The matching key lives in the Credential
+   * Manager, never here.
+   */
+  providerBaseUrl: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -106,6 +112,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  providerBaseUrl: "",
 };
 
 type Listener = () => void;

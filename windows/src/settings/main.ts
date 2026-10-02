@@ -181,11 +181,10 @@ const MODELS: [string, string][] = [
 
 function apiSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+  const state = h("span", { class: "hint" });
 
   const field = h("input", {
     type: "password",
-    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-ant-...",
     style: "flex:1 1 auto;min-width:0",
     autocomplete: "off",
     spellcheck: "false",
@@ -250,6 +249,160 @@ function apiSection(hasKey: boolean): HTMLElement {
     state,
     h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
     h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    feedback,
+  );
+}
+
+/** The custom provider — its own section, because it is a different thing from
+ *  the Anthropic key above: a base URL, a key that may be empty, and a model
+ *  list that comes from the network rather than from this build. */
+function providerSection(): HTMLElement {
+  const urlField = h("input", {
+    type: "text",
+    placeholder: "http://127.0.0.1:20128/v1",
+    value: settings.providerBaseUrl,
+    style: "flex:1 1 auto;min-width:0",
+    autocomplete: "off",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+
+  const keyField = h("input", {
+    type: "password",
+    style: "flex:1 1 auto;min-width:0",
+    autocomplete: "off",
+    spellcheck: "false",
+  }) as HTMLInputElement;
+  const keyDot = statusDot(false);
+  const keyHint = h("span", { class: "hint" });
+
+  const model = h("select", {}) as HTMLSelectElement;
+  const modelReload = h("button", { text: "Refresh" });
+  const feedback = h("div", {});
+
+  async function refreshKey() {
+    const present = (await Bridge.secretPresent("provider-api-key")) ?? false;
+    keyDot.style.background = present ? "#22c55e" : "#f4505e";
+    keyField.placeholder = present ? "••••••••••••  (stored)" : "sk-…  (optional)";
+    keyHint.textContent = present
+      ? "Provider key saved."
+      : "No provider key. A local router usually needs none.";
+  }
+
+  async function fillModels() {
+    clear(model);
+    if (settings.providerBaseUrl.trim() === "") {
+      model.disabled = true;
+      modelReload.style.display = "none";
+      model.append(h("option", { text: "Set a base URL first" }));
+      return;
+    }
+    model.disabled = true;
+    model.append(h("option", { text: "Reading the provider…" }));
+    try {
+      const ids = await Bridge.providerModels();
+      clear(model);
+      model.disabled = false;
+      modelReload.style.display = "";
+      if (!ids.length) throw new Error("empty list");
+      for (const id of ids) model.append(h("option", { value: id, text: id }));
+      // The router is unlikely to serve the model chosen before it was
+      // configured; keeping it would make every chat turn fail.
+      if (!ids.includes(settings.model)) {
+        model.value = ids[0];
+        settings.model = ids[0];
+        void save();
+      }
+    } catch {
+      clear(model);
+      model.disabled = false;
+      modelReload.style.display = "";
+      model.append(h("option", { text: "Could not reach the provider" }));
+      if (settings.model) model.append(h("option", { value: settings.model, text: settings.model }));
+      model.value = settings.model;
+    }
+  }
+
+  const saveUrl = h("button", { class: "primary", text: "Save" });
+  saveUrl.addEventListener("click", async () => {
+    clear(feedback);
+    const raw = urlField.value.trim();
+    if (raw && !/^https?:\/\//i.test(raw)) {
+      feedback.append(h("div", { class: "notice err", text: "Start the address with http:// or https://." }));
+      return;
+    }
+    settings.providerBaseUrl = raw.replace(/\/+$/, "");
+    urlField.value = settings.providerBaseUrl;
+    await save();
+    await fillModels();
+    feedback.append(h("div", {
+      class: "notice ok",
+      text: settings.providerBaseUrl
+        ? "Provider saved. The chat now goes there instead of Anthropic."
+        : "Provider cleared. The chat goes to Anthropic again.",
+    }));
+  });
+
+  const saveKey = h("button", { text: "Save" });
+  saveKey.addEventListener("click", async () => {
+    const value = keyField.value.trim();
+    if (!value) return;
+    clear(feedback);
+    try {
+      await Bridge.secretSet("provider-api-key", value);
+      keyField.value = "";
+      feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
+      await refreshKey();
+    } catch (err) {
+      feedback.append(h("div", { class: "notice err", text: `Could not save: ${String(err)}` }));
+    }
+  });
+
+  const clearKey = h("button", { class: "danger", text: "Remove" });
+  clearKey.addEventListener("click", async () => {
+    clear(feedback);
+    try {
+      await Bridge.secretClear("provider-api-key");
+      feedback.append(h("div", { class: "notice ok", text: "Provider key removed." }));
+      await refreshKey();
+    } catch (err) {
+      feedback.append(h("div", { class: "notice err", text: `Could not remove: ${String(err)}` }));
+    }
+  });
+
+  const clearUrl = h("button", { class: "danger", text: "Remove" });
+  clearUrl.style.display = settings.providerBaseUrl.trim() === "" ? "none" : "";
+  clearUrl.addEventListener("click", async () => {
+    clear(feedback);
+    urlField.value = "";
+    settings.providerBaseUrl = "";
+    await save();
+    clearUrl.style.display = "none";
+    await fillModels();
+    feedback.append(h("div", { class: "notice ok", text: "Provider removed." }));
+  });
+
+  modelReload.addEventListener("click", () => void fillModels());
+  model.addEventListener("change", () => {
+    settings.model = model.value;
+    void save();
+  });
+  urlField.addEventListener("keydown", (e) => { if (e.key === "Enter") saveUrl.click(); });
+  keyField.addEventListener("keydown", (e) => { if (e.key === "Enter") saveKey.click(); });
+
+  void refreshKey();
+  void fillModels();
+
+  return h(
+    "section",
+    {},
+    h("h2", {}, h("span", { text: "Provider" })),
+    h("div", {
+      class: "hint",
+      text: "Point Coucou at your own gateway. Leave the base URL empty to talk to Anthropic instead. The key is optional and stored in the Windows Credential Manager, never on disk.",
+    }),
+    h("div", { class: "row" }, h("label", { text: "Base URL" }), urlField, saveUrl, clearUrl),
+    h("div", { class: "row" }, h("label", { text: "API key" }), keyField, saveKey, clearKey, keyDot),
+    h("div", { class: "row" }, h("label", { text: "Model" }), model, modelReload, keyHint),
     feedback,
   );
 }
@@ -443,6 +596,7 @@ async function main() {
     h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
     claudeSection(status),
     apiSection(hasKey),
+    providerSection(),
     integrationsSection(present),
     generalSection(),
     h("div", {

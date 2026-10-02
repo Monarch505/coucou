@@ -8,7 +8,10 @@ license.workspace = true
 
 [lib]
 name = "coucou_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Only rlib: staticlib/cdylib exist for mobile targets, which this app has none
+# of. Building all three makes rustc codegen the whole crate three times, and the
+# release LTO then runs out of memory on a 16 GB machine.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -24,11 +27,19 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
   "Win32_System_Ole",
   "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# The #[implement] macro expands to `::windows_core::…` paths, so this must be
+# a direct dependency — same 0.61 line as `windows` above.
+windows-core = "0.61"

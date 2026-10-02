@@ -1,12 +1,14 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+mod drop;
 mod files;
 mod hooks;
 mod integrations;
 mod island;
 mod log;
 mod pipe;
+mod providers;
 mod secrets;
 mod settings;
 mod tray;
@@ -97,6 +99,12 @@ fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
     island::set_ignore_cursor(&app, false);
     shared.gate.forget_ignore_state();
     shared.gate.set_active(!collapsed);
+    // Expanding is when drops matter: re-take any child window WebView2 has
+    // (re)created since the last pass. No-op when the set is unchanged.
+    if !collapsed {
+        let h = app.clone();
+        let _ = app.run_on_main_thread(move || drop::install(&h));
+    }
 }
 
 /// The front end pushes the island shape; Rust decides click-through from it.
@@ -248,8 +256,8 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let settings = shared.settings.lock().unwrap().clone();
+    claude::send(&chat, &settings, query, context).await
 }
 
 #[tauri::command]
@@ -267,6 +275,17 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
 #[tauri::command]
 fn secret_present(key: String) -> bool {
     secrets::present(&key)
+}
+
+/// The custom provider's model list, fetched live so the dropdown shows what it
+/// actually has. Requires a base URL in the settings; the key is read from the
+/// Credential Manager here and never sent to the front end.
+#[tauri::command]
+async fn provider_models(shared: State<'_, Shared>) -> Result<Vec<String>, String> {
+    let provider = providers::resolve(&shared.settings.lock().unwrap())?
+        .ok_or_else(|| "No provider configured.".to_string())?;
+    let client = providers::client()?;
+    providers::models(&client, &provider).await
 }
 
 #[tauri::command]
@@ -403,6 +422,7 @@ pub fn run() {
             secret_present,
             secret_set,
             secret_clear,
+            provider_models,
             refresh_integration,
             open_n8n,
             open_settings_window,
@@ -422,6 +442,19 @@ pub fn run() {
             gate.collapsed.store(false, Ordering::Relaxed);
             gate.set_active(true);
             island::spawn_cursor_poll(handle.clone(), gate.clone());
+            // wry only registers its drop target on the children that exist
+            // while the webview is being built; WebView2 creates its leaf
+            // windows after that, and OLE never walks up. Take the leaves now
+            // and again once WebView2 has finished booting.
+            drop::install(&handle);
+            {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let h2 = h.clone();
+                    let _ = h.run_on_main_thread(move || drop::install(&h2));
+                });
+            }
 
             log::line(format!("--- Coucou {} started ---", env!("CARGO_PKG_VERSION")));
             hooks::ensure_hook_exe(&handle);

@@ -9,9 +9,12 @@ license = "MIT"
 
 # Release profile shared by the app and the hook relay: the hook must start fast
 # (Claude Code spawns it on every event), so we optimise for size and speed.
+# lto/codegen-units are deliberately off — fat LTO on the Tauri dependency tree
+# needs more RAM than a normal dev machine has free, and it failed the build
+# outright. Thin LTO keeps most of the size win for a fraction of the memory.
 [profile.release]
 opt-level = "s"
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 panic = "abort"
 strip = true

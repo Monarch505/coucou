@@ -9,7 +9,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::providers;
 use crate::secrets;
+use crate::settings::Settings;
 
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -72,12 +74,23 @@ pub struct ChatReply {
 /// in the note view.
 pub async fn send(
     chat: &Chat,
-    model: &str,
+    settings: &Settings,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let key = secrets::get("anthropic-api-key")
-        .ok_or_else(|| "API key missing. Open settings.".to_string())?;
+    let model = settings.model.clone();
+
+    // A configured provider takes over completely — its own base URL and its own
+    // key. Only when there is none does the Anthropic key matter, so a router
+    // user never has to paste one.
+    let target: providers::Target = match providers::resolve(settings)? {
+        Some(provider) => providers::Target::Provider(provider),
+        None => providers::Target::Anthropic {
+            url: ENDPOINT.to_string(),
+            key: secrets::get("anthropic-api-key")
+                .ok_or_else(|| "API key missing. Open settings.".to_string())?,
+        },
+    };
 
     let mut content: Vec<Value> = Vec::new();
 
@@ -114,7 +127,7 @@ pub async fn send(
         "messages": chat.snapshot(),
     });
 
-    let response = match call(&key, &body).await {
+    let response = match call(&target, &body).await {
         Ok(v) => v,
         Err(err) => {
             chat.pop(); // keep the history consistent with what the model saw
@@ -157,19 +170,32 @@ pub async fn send(
     Ok(ChatReply { text })
 }
 
-async fn call(key: &str, body: &Value) -> Result<Value, String> {
+async fn call(target: &providers::Target, body: &Value) -> Result<Value, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
-        .post(ENDPOINT)
-        .header("x-api-key", key)
+    let mut request = client
+        .post(target.endpoint())
         .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("anthropic-beta", FALLBACK_BETA)
         .header("content-type", "application/json")
-        .json(body)
+        .json(&target.prepare_body(body));
+
+    match target {
+        providers::Target::Anthropic { key, .. } => {
+            request = request
+                .header("x-api-key", key)
+                .header("anthropic-beta", FALLBACK_BETA);
+        }
+        providers::Target::Provider(provider) => {
+            for (name, value) in providers::headers(provider) {
+                request = request.header(name, value);
+            }
+        }
+    }
+
+    let response = request
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -189,7 +215,35 @@ async fn call(key: &str, body: &Value) -> Result<Value, String> {
             .unwrap_or_else(|| text.chars().take(200).collect());
         return Err(format!("Claude API {status}: {detail}"));
     }
-    serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"))
+
+    // A provider that ignores `"stream": false` still answers in SSE. Take the
+    // last text block rather than failing the turn — measured against the local
+    // router on 2026-10-01, which streams unless asked not to.
+    if text.trim_start().starts_with('{') {
+        return serde_json::from_str(&text).map_err(|e| format!("Bad API response: {e}"));
+    }
+
+    let streamed: String = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .filter_map(|payload| serde_json::from_str::<Value>(payload.trim()).ok())
+        .filter_map(|event| {
+            event
+                .get("delta")
+                .and_then(|d| d.get("text"))
+                .or_else(|| event.get("content_block"))
+                .and_then(|c| c.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    if streamed.is_empty() {
+        return Err("Bad API response: no JSON and no text in the reply.".into());
+    }
+    Ok(json!({
+        "content": [{ "type": "text", "text": streamed }],
+        "stop_reason": "end_turn",
+    }))
 }
 
 /// PDF → document block, image → image block, text/code → inline text.

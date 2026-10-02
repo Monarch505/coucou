@@ -342,6 +342,8 @@ export class Island {
   // ── File drop ───────────────────────────────────────────────────────────────
 
   private onDragDrop(e: { type: string; paths?: string[] }) {
+    // "over" fires at the drag rate while the pointer is over the island, so it is
+    // left out of the log — it would write hundreds of lines per hover.
     if (e.type !== "over") void Bridge.log(`drag ${e.type} ${e.paths?.length ?? 0} file(s)`);
     if (State.paused) return;
     switch (e.type) {

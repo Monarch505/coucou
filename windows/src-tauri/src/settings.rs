@@ -20,6 +20,11 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// Base URL of a custom provider (a local router, a company proxy). Empty
+    /// means "talk to api.anthropic.com as before". Never holds a secret — the
+    /// key lives in the Credential Manager.
+    #[serde(default)]
+    pub provider_base_url: String,
 }
 
 fn default_model() -> String {
@@ -43,6 +48,7 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            provider_base_url: String::new(),
         }
     }
 }

@@ -45,7 +45,16 @@ function sharedSounds(): Plugin {
 export default defineConfig({
   plugins: [sharedSounds()],
   clearScreen: false,
-  server: { port: 1420, strictPort: true, host: "127.0.0.1" },
+  server: {
+    port: 1420,
+    strictPort: true,
+    host: "127.0.0.1",
+    // `tauri dev` runs cargo in the same tree, and cargo holds build-script
+    // executables open while it writes them. Node's watcher cannot open those
+    // and takes the whole dev server down with EBUSY — so it must never be
+    // pointed at `target/`.
+    watch: { ignored: ["**/target/**", "**/release/**", "**/dist/**"] },
+  },
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: {
     target: "chrome110",
