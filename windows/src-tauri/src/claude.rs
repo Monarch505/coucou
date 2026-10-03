@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::editor;
 use crate::providers;
 use crate::secrets;
 use crate::settings::Settings;
@@ -28,6 +29,157 @@ const SYSTEM_PROMPT: &str = "You are Mochi, a personal AI assistant living at th
 You have web search access and can help with absolutely anything — research, coding, finding places, recommendations, tasks, questions. \
 Respond in the user's language. Be thorough and complete — use as much detail as the task requires. \
 No markdown formatting (no **, no ##, no bullet dashes). Use plain text with line breaks.";
+
+/// The second personality. It is sent fresh on every request, so it can never
+/// collide with Mochi's — the two are never in the same conversation.
+const EDITOR_SYSTEM_PROMPT: &str = "\
+You are the editing half of Mochi, working inside a small app at the top of the user's screen. \
+You are given one folder — the folder a file was dropped into — and you may only touch files inside it. \
+Other paths are refused by the app, so never even propose them.
+
+HOW TO CHANGE A FILE: prefer edit_file. It replaces one exact snippet, costs almost nothing, and works no \
+matter how long the file is. Never read a whole file only to write it back: the output limit would cut it \
+and you would leave the file broken. Use write_file only for a file that does not exist yet, or when the \
+change genuinely rewrites every line.
+
+TOOLS: read_file, edit_file, write_file, delete_file, rename_file, run_command, list_backups, restore_backup.
+
+BEFORE YOU PROPOSE: read what you are changing, make the smallest change that does what was asked, and \
+say in one line what the change is. The user sees a card with a diff and decides. Nothing you propose is \
+written until they click.
+
+IF AN EDIT FAILS: the text you passed was not found, or appears more than once. Re-read the file and copy \
+the snippet exactly, with enough lines around it to be unique. Do not guess.
+
+IF A FILE CHANGED UNDER YOU: the user was told nothing was written. Read it again before proposing.
+
+TONE: plain text, the user's language, no markdown formatting (no **, no ##, no bullet dashes). \
+Say what you changed and what is left to do. No praise, no filler.";
+
+/// Which half of the assistant answers a turn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Persona {
+    /// Mochi, as it has always been: web search and conversation.
+    Mochi,
+    /// The editor: Mochi's tone, with the file tools and no web search.
+    Editor,
+}
+
+impl Persona {
+    fn system_prompt(self) -> &'static str {
+        match self {
+            Persona::Mochi => SYSTEM_PROMPT,
+            Persona::Editor => EDITOR_SYSTEM_PROMPT,
+        }
+    }
+
+    /// Mochi keeps exactly the one tool it has always had. The editor gets no
+    /// web search — searching the web and writing files in the same turn is
+    /// the shape of a prompt-injection accident.
+    fn tools(self) -> Value {
+        match self {
+            Persona::Mochi => json!([{ "type": "web_search_20260209", "name": "web_search", "max_uses": 5 }]),
+            Persona::Editor => json!(editor_tools()),
+        }
+    }
+}
+
+fn editor_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "read_file",
+            "description": "Read a file inside the folder you were given. Returns the whole content with a line count.",
+            "input_schema": {
+                "type": "object",
+                "properties": { "path": { "type": "string", "description": "Absolute path." } },
+                "required": ["path"],
+            },
+        }),
+        json!({
+            "name": "edit_file",
+            "description": "Propose replacing one exact snippet of a file. Nothing is written — the user reviews a diff and clicks. Use this for every change to an existing file, whatever its size. The snippet must appear exactly once; if it appears more than once, include more surrounding lines.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path of the file to change." },
+                    "old_string": { "type": "string", "description": "The exact text to replace, unique in the file." },
+                    "new_string": { "type": "string", "description": "What replaces it." },
+                    "summary": { "type": "string", "description": "One line the user sees on the card." },
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        }),
+        json!({
+            "name": "write_file",
+            "description": "Propose a file's entire content. Only for a file that does not exist yet, or a change that really does rewrite every line. For anything smaller use edit_file.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path." },
+                    "content": { "type": "string", "description": "The whole new content." },
+                    "summary": { "type": "string", "description": "One line the user sees on the card." },
+                },
+                "required": ["path", "content"],
+            },
+        }),
+        json!({
+            "name": "delete_file",
+            "description": "Propose removing a file. The old bytes go to a backup first, so this can be undone by proposing restore_backup with this change's id.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path." },
+                    "summary": { "type": "string", "description": "One line the user sees on the card." },
+                },
+                "required": ["path"],
+            },
+        }),
+        json!({
+            "name": "rename_file",
+            "description": "Propose moving a file. Both ends must stay inside the folder you were given.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Absolute path to move." },
+                    "to": { "type": "string", "description": "Absolute path to move it to. Must not exist." },
+                    "summary": { "type": "string", "description": "One line the user sees on the card." },
+                },
+                "required": ["from", "to"],
+            },
+        }),
+        json!({
+            "name": "run_command",
+            "description": "Propose running a program. No shell is involved: the name is looked up on PATH and the arguments stay separate. Nothing runs until the user clicks Run. stdout and stderr come back so you can report what happened.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "program": { "type": "string", "description": "Program name on PATH, or an absolute path inside the folder." },
+                    "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments, passed verbatim." },
+                    "cwd": { "type": "string", "description": "Absolute path of an existing folder inside the folder you were given." },
+                    "summary": { "type": "string", "description": "One line the user sees on the card." },
+                },
+                "required": ["program", "cwd"],
+            },
+        }),
+        json!({
+            "name": "list_backups",
+            "description": "List the changes already applied, newest first, with the id needed by restore_backup.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+        }),
+        json!({
+            "name": "restore_backup",
+            "description": "Propose putting a set of files back to how they were before an applied change. It is a proposal like any other — the user reviews a diff and clicks.",
+            "input_schema": {
+                "type": "object",
+                "properties": { "backup_id": { "type": "string", "description": "The id from list_backups." } },
+                "required": ["backup_id"],
+            },
+        }),
+    ]
+}
 
 #[derive(Default)]
 pub struct Chat {
@@ -68,6 +220,10 @@ pub enum ChatContext {
 #[serde(rename_all = "camelCase")]
 pub struct ChatReply {
     pub text: String,
+    /// Set when the turn ended in a proposal instead of a reply. The island
+    /// switches to the diff card; nothing has been written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending: Option<editor::PendingView>,
 }
 
 /// One chat turn. Returns the assistant's text, or a message the island shows
@@ -75,6 +231,7 @@ pub struct ChatReply {
 pub async fn send(
     chat: &Chat,
     settings: &Settings,
+    session: &editor::Session,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
@@ -92,6 +249,15 @@ pub async fn send(
         },
     };
 
+    // Which half answers depends on whether a file was dropped: with one in
+    // hand the editor is the useful half, and web search would only hand it
+    // text from the internet to paste into a local file.
+    let persona = if session.has_scope() {
+        Persona::Editor
+    } else {
+        Persona::Mochi
+    };
+
     let mut content: Vec<Value> = Vec::new();
 
     // File / window context rides along with the first message only, exactly
@@ -99,8 +265,28 @@ pub async fn send(
     if chat.is_empty() {
         match &context {
             Some(ChatContext::File { name, path }) => {
-                if let Some(block) = file_block(path) {
-                    content.push(block);
+                // A file we could not inline is said out loud rather than dropped
+                // in silence: the model used to look at a "File: notes.txt" line
+                // and answer from a file it had never been given.
+                match file_block(path) {
+                    Ok(block) => content.push(block),
+                    Err(why) => content.push(json!({
+                        "type": "text",
+                        "text": format!("File: {name} — not attached, {why}. Say so rather than guessing its contents."),
+                    })),
+                }
+                // The path the editor works on, not the inbox copy it reads.
+                if persona == Persona::Editor {
+                    content.push(json!({
+                        "type": "text",
+                        "text": format!(
+                            "Folder to work in: {folder}\nThe user dropped: {name}",
+                            folder = std::path::Path::new(path)
+                                .parent()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|| path.clone()),
+                        )
+                    }));
                 }
                 content.push(json!({ "type": "text", "text": format!("File: {name}") }));
             }
@@ -118,43 +304,147 @@ pub async fn send(
 
     chat.push(json!({ "role": "user", "content": content }));
 
-    let body = json!({
-        "model": model,
-        "max_tokens": MAX_TOKENS,
-        "system": SYSTEM_PROMPT,
-        "tools": [{ "type": "web_search_20260209", "name": "web_search", "max_uses": 5 }],
-        "fallbacks": "default",
-        "messages": chat.snapshot(),
-    });
-
-    let response = match call(&target, &body).await {
-        Ok(v) => v,
+    let reply = converse(&target, chat, &model, persona, Some(session)).await;
+    match reply {
+        Ok(r) => Ok(r),
         Err(err) => {
             chat.pop(); // keep the history consistent with what the model saw
-            return Err(err);
+            Err(err)
         }
-    };
-
-    // A policy decline comes back as HTTP 200 with stop_reason "refusal".
-    if response.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
-        chat.pop();
-        let why = response
-            .get("stop_details")
-            .and_then(|d| d.get("explanation"))
-            .and_then(Value::as_str)
-            .unwrap_or("Claude declined this one.");
-        return Err(why.to_string());
     }
+}
 
-    let Some(blocks) = response.get("content").and_then(Value::as_array).cloned() else {
-        chat.pop();
-        return Err("Unexpected API response.".into());
-    };
+/// One turn with the model, and — for the editor — any chain of tool calls it
+/// makes before it has an answer.
+///
+/// Mochi makes exactly one request, exactly as before. The editor loops: a
+/// `tool_use` block is answered locally and sent back as a `tool_result`, up to
+/// [`editor::MAX_TOOL_ROUNDS`], and stops early the moment a proposal comes up,
+/// because the user has to see that first.
+async fn converse(
+    target: &providers::Target,
+    chat: &Chat,
+    model: &str,
+    persona: Persona,
+    session: Option<&editor::Session>,
+) -> Result<ChatReply, String> {
+    for round in 0..=editor::MAX_TOOL_ROUNDS {
+        let body = json!({
+            "model": model,
+            "max_tokens": MAX_TOKENS,
+            "system": persona.system_prompt(),
+            "tools": persona.tools(),
+            "fallbacks": "default",
+            "messages": chat.snapshot(),
+        });
 
-    // Store the whole content — tool_use / tool_result blocks included — so the
-    // next turn has the right context.
-    chat.push(json!({ "role": "assistant", "content": blocks.clone() }));
+        let response = call(target, &body).await?;
 
+        // A policy decline comes back as HTTP 200 with stop_reason "refusal".
+        if response.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
+            let why = response
+                .get("stop_details")
+                .and_then(|d| d.get("explanation"))
+                .and_then(Value::as_str)
+                .unwrap_or("Claude declined this one.");
+            return Err(why.to_string());
+        }
+
+        let Some(blocks) = response.get("content").and_then(Value::as_array).cloned() else {
+            return Err("Unexpected API response.".into());
+        };
+
+        // Store the whole content — tool_use / tool_result blocks included — so
+        // the next turn has the right context.
+        chat.push(json!({ "role": "assistant", "content": blocks.clone() }));
+
+        let uses: Vec<&Value> = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+            .collect();
+
+        // Mochi has no local tools, so this is where it always ends.
+        let Some(session) = session else {
+            return finish(blocks, None);
+        };
+
+        if uses.is_empty() {
+            return finish(blocks, None);
+        }
+
+        // A truncated `write_file` proposal is the one thing that can arrive
+        // half-built: the whole content is the output, so hitting the token
+        // ceiling means the card would hold a mangled file. Refuse it outright.
+        let cut = response.get("stop_reason").and_then(Value::as_str) == Some("max_tokens");
+        let mut results = Vec::new();
+        let mut card = None;
+        for call in uses {
+            let (id, name) = match tool_identity(call) {
+                Some(v) => v,
+                None => continue,
+            };
+            let input = call.get("input").cloned().unwrap_or_else(|| json!({}));
+            let outcome = dispatch(session, &name, &input);
+            results.push(json!({
+                "type": "tool_result",
+                "tool_use_id": id,
+                "content": outcome.result,
+                "is_error": outcome.is_error,
+            }));
+            if card.is_none() {
+                if let Some(c) = outcome.card {
+                    if cut {
+                        results.clear();
+                        results.push(json!({
+                            "type": "tool_result",
+                            "tool_use_id": id,
+                            "content": "That answer was cut off at the token limit, so the file would have been written incomplete. Nothing was proposed — make the change in smaller pieces, or with edit_file.",
+                            "is_error": true,
+                        }));
+                        break;
+                    }
+                    card = Some(c);
+                }
+            }
+        }
+
+        // The model's text alongside a proposal is what the card is titled with.
+        let text = blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_string();
+
+        if let Some(card) = card {
+            let id = session.hold(card);
+            return Ok(ChatReply {
+                text: if text.is_empty() {
+                    String::new()
+                } else {
+                    text
+                },
+                pending: session.pending_of(&id),
+            });
+        }
+
+        if round == editor::MAX_TOOL_ROUNDS {
+            results.push(json!({
+                "type": "tool_result",
+                "tool_use_id": "none",
+                "content": "That was the last tool round. Answer the user now.",
+                "is_error": true,
+            }));
+        }
+        chat.push(json!({ "role": "user", "content": results }));
+    }
+    Err("The assistant went too many rounds without answering.".into())
+}
+
+/// The model's closing words, or the card if it proposed something instead.
+fn finish(blocks: Vec<Value>, pending: Option<editor::PendingView>) -> Result<ChatReply, String> {
     let text = blocks
         .iter()
         .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
@@ -163,11 +453,52 @@ pub async fn send(
         .join("\n")
         .trim()
         .to_string();
-
-    if text.is_empty() {
+    if text.is_empty() && pending.is_none() {
         return Err("No response text.".into());
     }
-    Ok(ChatReply { text })
+    Ok(ChatReply { text, pending })
+}
+
+fn tool_identity(call: &Value) -> Option<(String, String)> {
+    let id = call.get("id").and_then(Value::as_str)?.to_string();
+    let name = call.get("name").and_then(Value::as_str)?.to_string();
+    Some((id, name))
+}
+
+fn text_arg(input: &Value, key: &str) -> String {
+    input.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// Runs one tool call. Unknown names get an error back rather than being
+/// ignored: an unrecognised call with no result would leave the API waiting.
+fn dispatch(session: &editor::Session, name: &str, input: &Value) -> editor::Outcome {
+    let summary = {
+        let s = text_arg(input, "summary");
+        if s.is_empty() { String::new() } else { s }
+    };
+    match name {
+        "read_file" => session.read(&text_arg(input, "path")),
+        "edit_file" => session.edit(
+            &text_arg(input, "path"),
+            &text_arg(input, "old_string"),
+            &text_arg(input, "new_string"),
+            &summary,
+        ),
+        "write_file" => session.write(&text_arg(input, "path"), &text_arg(input, "content"), &summary),
+        "delete_file" => session.delete(&text_arg(input, "path"), &summary),
+        "rename_file" => session.rename(&text_arg(input, "from"), &text_arg(input, "to"), &summary),
+        "run_command" => {
+            let args = input
+                .get("args")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<_>>())
+                .unwrap_or_default();
+            session.run(&text_arg(input, "program"), &args, &text_arg(input, "cwd"), &summary)
+        }
+        "list_backups" => session.backups(),
+        "restore_backup" => session.restore(&text_arg(input, "backup_id")),
+        _ => editor::Outcome::err(format!("there is no tool called {name}.")),
+    }
 }
 
 async fn call(target: &providers::Target, body: &Value) -> Result<Value, String> {
@@ -247,8 +578,9 @@ async fn call(target: &providers::Target, body: &Value) -> Result<Value, String>
 }
 
 /// PDF → document block, image → image block, text/code → inline text.
-/// Mirrors readFileAsBlock() in ClaudeService.swift.
-fn file_block(path: &str) -> Option<Value> {
+/// Mirrors readFileAsBlock() in ClaudeService.swift, except that a file it cannot
+/// inline comes back as the reason rather than as nothing at all.
+fn file_block(path: &str) -> Result<Value, String> {
     let ext = std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
@@ -265,19 +597,25 @@ fn file_block(path: &str) -> Option<Value> {
     };
 
     if let Some((block_type, media)) = media_type {
-        let bytes = std::fs::read(path).ok()?;
-        return Some(json!({
+        let bytes = std::fs::read(path).map_err(|e| format!("it could not be read: {e}"))?;
+        return Ok(json!({
             "type": block_type,
             "source": { "type": "base64", "media_type": media, "data": base64(&bytes) },
         }));
     }
 
-    let len = std::fs::metadata(path).ok()?.len();
+    let len = std::fs::metadata(path)
+        .map_err(|e| format!("it could not be read: {e}"))?
+        .len();
     if len > MAX_INLINE_TEXT {
-        return None;
+        return Err(format!(
+            "it is {} KB and the limit is {} KB",
+            len / 1000,
+            MAX_INLINE_TEXT / 1000
+        ));
     }
-    let text = std::fs::read_to_string(path).ok()?;
-    Some(json!({ "type": "text", "text": format!("File contents:\n{text}") }))
+    let text = std::fs::read_to_string(path).map_err(|e| format!("it could not be read: {e}"))?;
+    Ok(json!({ "type": "text", "text": format!("File contents:\n{text}") }))
 }
 
 /// Small standalone base64 encoder — not worth another dependency.

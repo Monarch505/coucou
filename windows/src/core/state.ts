@@ -1,6 +1,7 @@
 // App state — mirror of AppState.swift (the parts the island needs).
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
+import type { PendingView } from "./bridge";
 import type { EyeShape } from "../mochi/engine";
 
 export type AgentSource = "claudeCode" | "n8n" | "agent";
@@ -144,6 +145,15 @@ class AppState {
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];
   pendingApproval: ApprovalInfo | null = null;
+  /**
+   * The proposal on the diff card, or null. Rust owns the bytes and the guards;
+   * this is only what the card draws, and it is dropped the moment the card
+   * closes so a stale card can never be clicked twice.
+   */
+  pending: PendingView | null = null;
+  /** Output of a run that was clicked, or the error that stopped it. */
+  runOutput: string | null = null;
+  runFailed = false;
 
   integrations: Record<string, IntegrationInfo> = {};
 

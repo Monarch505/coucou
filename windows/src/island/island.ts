@@ -166,6 +166,7 @@ export class Island {
         State.notify();
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
+      requestHeight: () => this.animateGeometry(false),
       blip: () => Sound.play("blip"),
     };
 
@@ -459,7 +460,12 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const { w, h } = islandSize(
+      State.mode,
+      State.view,
+      State.chatHistory.length,
+      State.pending?.files.length ?? 0,
+    );
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }

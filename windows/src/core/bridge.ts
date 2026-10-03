@@ -83,10 +83,22 @@ export const Bridge = {
   // ── Chat, files, secrets ──────────────────────────────────────────────────
   /** One chat turn. The API key and any file bytes never leave Rust. */
   chatSend: (query: string, context: ChatContext | null) =>
-    callOrThrow<{ text: string }>("chat_send", { query, context }),
+    callOrThrow<ChatReply>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
+
+  // ── Approving a proposal ──────────────────────────────────────────────────
+  // All three are reached only from a click on the card. Nothing the model says
+  // gets here on its own.
+  /** Re-reads a proposal, for a card that came back after a reload. */
+  editorPending: (id: string) => call<PendingView | null>("editor_pending", { id }),
+  /** Writes the change set. Rust re-checks every guard before the first write. */
+  editorApply: (id: string) => callOrThrow<string>("editor_apply", { id }),
+  /** Runs the proposed command and returns its output. */
+  editorRun: (id: string) => callOrThrow<string>("editor_run", { id }),
+  /** Forgets the id, so a stale card cannot apply anything. */
+  editorDiscard: (id: string) => call<void>("editor_discard", { id }),
   /** Only ever tells you whether a key exists — never its value. */
   secretPresent: (key: string) => call<boolean>("secret_present", { key }),
   secretSet: (key: string, value: string) => callOrThrow<void>("secret_set", { key, value }),
@@ -118,6 +130,33 @@ export interface DroppedFile {
   name: string;
   path: string;
   size: number;
+}
+
+/** A turn that ended in a proposal instead of a reply. Nothing has been written. */
+export interface ChatReply {
+  text: string;
+  pending?: PendingView;
+}
+
+/** One file in a proposal. `old`/`new` are cut to what the card can show. */
+export interface FilePreview {
+  kind: "edit" | "create" | "delete" | "rename" | string;
+  name: string;
+  /** Empty for a delete — the file is gone, there is nowhere left to write. */
+  path: string;
+  old: string;
+  new: string;
+  truncated: boolean;
+  added: number;
+  removed: number;
+}
+
+export interface PendingView {
+  id: string;
+  summary: string;
+  files: FilePreview[];
+  /** Set instead of `files` when the proposal is a command. */
+  run: { program: string; args: string[]; cwd: string } | null;
 }
 
 export interface HookStatus {

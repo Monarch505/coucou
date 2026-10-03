@@ -9,6 +9,7 @@ import { State, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
+import { buildDiff } from "./diff";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 
@@ -25,6 +26,8 @@ export interface ViewActions {
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
+  /** Ask the island to re-measure its target height (a card grew or shrank). */
+  requestHeight(): void;
   blip(): void;
 }
 
@@ -498,6 +501,7 @@ export function buildViews(
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("diff", buildDiff(actions));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());
   map.set("choose", buildChoose(actions));

@@ -2,6 +2,7 @@
 
 mod claude;
 mod drop;
+mod editor;
 mod files;
 mod hooks;
 mod integrations;
@@ -23,6 +24,7 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder
 use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
 use claude::{Chat, ChatContext, ChatReply};
+use editor::{PendingView, Session};
 use files::DroppedFile;
 use hooks::{HookPreview, HookStatus};
 use island::{PollGate, ScreenInfo};
@@ -246,22 +248,59 @@ fn approval_decline(app: AppHandle, request_id: String) {
 async fn chat_send(
     shared: State<'_, Shared>,
     chat: State<'_, Chat>,
+    editor: State<'_, Session>,
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
     let settings = shared.settings.lock().unwrap().clone();
-    claude::send(&chat, &settings, query, context).await
+    claude::send(&chat, &settings, &editor, query, context).await
 }
 
 #[tauri::command]
-fn chat_reset(chat: State<Chat>) {
+fn chat_reset(chat: State<Chat>, editor: State<Session>) {
     chat.reset();
+    editor.reset();
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
+///
+/// The dropped file's own folder is what the editor may later write to, so
+/// the session opens here — and only here.
 #[tauri::command]
-fn ingest_file(path: String) -> Result<DroppedFile, String> {
-    files::ingest(&path)
+fn ingest_file(editor: State<Session>, path: String) -> Result<DroppedFile, String> {
+    let dropped = files::ingest(&path)?;
+    editor.allow_folder(std::path::Path::new(&dropped.original));
+    Ok(dropped)
+}
+
+// ── Applying a proposal ───────────────────────────────────────────────────────
+//
+// Each of these is reached only from an explicit click on the card. Nothing in
+// the model's control gets here on its own.
+
+#[tauri::command]
+fn editor_pending(editor: State<'_, Session>, id: String) -> Option<PendingView> {
+    editor.pending_of(&id)
+}
+
+/// Applies a file change set. The guards were re-checked in `Session::apply`,
+/// before the backup and before the first write.
+#[tauri::command]
+fn editor_apply(editor: State<'_, Session>, id: String) -> Result<String, String> {
+    editor.apply(&id)
+}
+
+/// Runs a proposed command and hands its output back for the island to show.
+#[tauri::command]
+fn editor_run(editor: State<'_, Session>, id: String) -> Result<String, String> {
+    editor.execute(&id)
+}
+
+/// Throws a proposal away. The only thing it does is forget the id, so a later
+/// click on a stale card cannot apply anything.
+#[tauri::command]
+fn editor_discard(editor: State<'_, Session>, id: String) {
+    editor.discard(&id);
 }
 
 /// The island may only ask whether a key exists — never read it.
@@ -393,6 +432,7 @@ pub fn run() {
         })
         .manage(Pending::default())
         .manage(Chat::default())
+        .manage(Session::default())
         .invoke_handler(tauri::generate_handler![
             boot,
             save_settings,
@@ -413,6 +453,10 @@ pub fn run() {
             chat_send,
             chat_reset,
             ingest_file,
+            editor_pending,
+            editor_apply,
+            editor_run,
+            editor_discard,
             secret_present,
             secret_set,
             secret_clear,

@@ -76,9 +76,20 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     try {
       const reply = await Bridge.chatSend(query, context);
-      State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
+      if (reply.text) State.chatHistory.push({ id: nextId++, role: "assistant", content: reply.text });
       State.stateOverride = null;
-      Sound.play("finish");
+      if (reply.pending) {
+        // A proposal is not a reply. The diff card takes over; whatever the model
+        // said for its own reasons stays in the chat behind it.
+        State.pending = reply.pending;
+        State.runOutput = null;
+        State.runFailed = false;
+        State.view = "diff";
+        State.isPinned = true;
+        Sound.play("blip");
+      } else {
+        Sound.play("finish");
+      }
     } catch (err) {
       State.stateOverride = null;
       State.noteMessage = String(err).replace(/^Error:\s*/, "");

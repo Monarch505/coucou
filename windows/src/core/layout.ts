@@ -21,7 +21,8 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
-  | "greeting";
+  | "greeting"
+  | "diff";
 
 export type BotStateName =
   | "idle"
@@ -86,6 +87,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // Two files at once is the realistic batch; the panel is already 320 tall.
+  diff: { height: 300, botX: 40, botY: null, botDiameter: 40, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
@@ -97,10 +100,20 @@ export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
 }
 
+/**
+ * The diff card grows with what it has to show, the way the chat grows with the
+ * conversation: one file needs a window you can actually read a line in, and
+ * more files simply scroll.
+ */
+export function diffHeight(fileCount: number): number {
+  return Math.min(PANEL_H, 190 + fileCount * 46);
+}
+
 export function islandSize(
   mode: IslandMode,
   view: IslandViewName,
   chatCount = 0,
+  fileCount = 0,
 ): { w: number; h: number } {
   switch (mode) {
     case "hidden":
@@ -110,7 +123,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
+      const h =
+        view === "prompt" ? chatPromptHeight(chatCount)
+        : view === "diff" ? diffHeight(fileCount)
+        : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }

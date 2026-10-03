@@ -15,7 +15,11 @@ const KEEP_FOR: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 #[serde(rename_all = "camelCase")]
 pub struct DroppedFile {
     pub name: String,
+    /// Where the copy in the inbox lives — what the assistant reads.
     pub path: String,
+    /// Where the file the user actually dropped lives. Same file, untouched, and
+    /// the only path the editor is ever allowed to write to.
+    pub original: String,
     pub size: u64,
 }
 
@@ -64,6 +68,7 @@ pub fn ingest(source: &str) -> Result<DroppedFile, String> {
     Ok(DroppedFile {
         name,
         path: dest.to_string_lossy().to_string(),
+        original: src.to_string_lossy().to_string(),
         size: meta.len(),
     })
 }
@@ -96,6 +101,7 @@ mod tests {
 
         let first = ingest(source.to_str().unwrap()).unwrap();
         assert_eq!(first.name, "note.txt");
+        assert_eq!(first.original, source.to_str().unwrap());
         assert_eq!(std::fs::read(&first.path).unwrap(), b"hello");
 
         // A second drop of the same name must not clobber the first copy.
