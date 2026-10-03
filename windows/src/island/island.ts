@@ -431,6 +431,13 @@ export class Island {
     if (since == null) return;
     const dur = State.uploadDuration;
     const p = Math.max(0, Math.min(1, (since - PRE_PROGRESS) / dur));
+    // The view reads State.uploadProgress — the bar, the percentage and the bot's
+    // position on the rail all come from here. p used to drive only the ticks,
+    // which left the bar at 0 % while the sequence still finished.
+    State.uploadProgress = p;
+    // notify() is what marks the DOM dirty; without it the bar is rebuilt once,
+    // at 0 %, and never again.
+    State.notify();
 
     const tens = Math.floor(p * 10);
     if (tens > this.uploadTens && tens < 10) {
