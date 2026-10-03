@@ -10,6 +10,15 @@
 ; of this app goes out of its way not to do. A relay that is gone exits 0 without
 ; printing anything, so a leftover entry costs nothing beyond a dead path.
 
+!macro NSIS_HOOK_POSTINSTALL
+  ; The default Tauri installer puts a shortcut in the Start Menu but leaves the
+  ; Desktop alone unless the install is silent — so a normal double-click install
+  ; gave the user nothing to click. This app lives in a corner of the screen and
+  ; is started and stopped like any other program, so it gets one either way.
+  CreateShortcut "$DESKTOP\Coucou.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  !insertmacro SetLnkAppUserModelId "$DESKTOP\Coucou.lnk"
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   RMDir /r "$LOCALAPPDATA\Coucou\bin"
   RMDir /r "$LOCALAPPDATA\Coucou\inbox"
