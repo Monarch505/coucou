@@ -212,7 +212,15 @@ impl Chat {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ChatContext {
-    File { name: String, path: String },
+    File {
+        name: String,
+        /// The inbox copy — what gets read and inlined.
+        path: String,
+        /// The file the user actually dropped. This is the one the editor may
+        /// write to, and the only path inside the session's scope; the copy is
+        /// deliberately outside it.
+        original: String,
+    },
     Window { app_name: String, title: String, url: Option<String> },
 }
 
@@ -264,7 +272,7 @@ pub async fn send(
     // like ClaudeService.chat().
     if chat.is_empty() {
         match &context {
-            Some(ChatContext::File { name, path }) => {
+            Some(ChatContext::File { name, path, original }) => {
                 // A file we could not inline is said out loud rather than dropped
                 // in silence: the model used to look at a "File: notes.txt" line
                 // and answer from a file it had never been given.
@@ -275,16 +283,19 @@ pub async fn send(
                         "text": format!("File: {name} — not attached, {why}. Say so rather than guessing its contents."),
                     })),
                 }
-                // The path the editor works on, not the inbox copy it reads.
+                // The folder the editor may write to, spelled out from the file
+                // the user dropped rather than the copy we hold. The two differ,
+                // and the copy's folder is deliberately out of scope.
                 if persona == Persona::Editor {
                     content.push(json!({
                         "type": "text",
                         "text": format!(
-                            "Folder to work in: {folder}\nThe user dropped: {name}",
-                            folder = std::path::Path::new(path)
+                            "Folder to work in: {folder}\nThe file to edit is {original}",
+                            folder = std::path::Path::new(original)
                                 .parent()
                                 .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|| path.clone()),
+                                .unwrap_or_else(|| original.clone()),
+                            original = original,
                         )
                     }));
                 }

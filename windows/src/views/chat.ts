@@ -36,7 +36,7 @@ function contextChip(label: string): HTMLElement {
   return chip;
 }
 
-export function buildPrompt(onHeightChange: () => void): ViewHost {
+export function buildPrompt(onHeightChange: () => void, onPin: (pinned: boolean) => void): ViewHost {
   const chipRow = h("div", { class: "chip-row" });
   const log = h("div", { class: "chat-log" });
   const input = h("input", {
@@ -72,7 +72,9 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
 
     const file = State.droppedFile;
     const context: ChatContext | null =
-      State.chatHistory.length === 1 && file ? { kind: "file", name: file.name, path: file.path } : null;
+      State.chatHistory.length === 1 && file
+        ? { kind: "file", name: file.name, path: file.path, original: file.original }
+        : null;
 
     try {
       const reply = await Bridge.chatSend(query, context);
@@ -86,6 +88,11 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
         State.runFailed = false;
         State.view = "diff";
         State.isPinned = true;
+        // The state machine holds its own pin, so it must be told as well:
+        // without this the island still auto-closes after the idle interval and
+        // takes the card away mid-sentence. No timer — the card closes when the
+        // user answers it or throws it away.
+        onPin(true);
         Sound.play("blip");
       } else {
         Sound.play("finish");

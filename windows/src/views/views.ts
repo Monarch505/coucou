@@ -15,6 +15,11 @@ import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
+  /**
+   * Holds the island open (or lets it close again) while something is waiting
+   * for an answer. A proposal card sets it; closing the card clears it.
+   */
+  setPin(pinned: boolean): void;
   collapse(): void;
   setFocus(id: string): void;
   openTerminal(): void;
@@ -500,7 +505,7 @@ export function buildViews(
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
-  map.set("prompt", buildPrompt(onChatHeightChange));
+  map.set("prompt", buildPrompt(onChatHeightChange, actions.setPin));
   map.set("diff", buildDiff(actions));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());

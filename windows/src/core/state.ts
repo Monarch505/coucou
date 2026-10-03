@@ -37,7 +37,7 @@ export interface ChatMessage {
 
 export type PromptContext =
   | { kind: "window"; appName: string; title: string; url?: string }
-  | { kind: "file"; name: string; path?: string };
+  | { kind: "file"; name: string; path?: string; original?: string };
 
 export interface ResultItem {
   label: string;
@@ -140,7 +140,11 @@ class AppState {
   fileDragOver = false;
 
   promptContext: PromptContext | null = null;
-  droppedFile: { name: string; path: string } | null = null;
+  /**
+   * The dropped file: the inbox copy the assistant reads, and the original the
+   * editor writes to. Both are needed — they are two different files.
+   */
+  droppedFile: { name: string; path: string; original: string } | null = null;
   noteMessage: string | null = null;
   searchResult: SearchResult | null = null;
   chatHistory: ChatMessage[] = [];

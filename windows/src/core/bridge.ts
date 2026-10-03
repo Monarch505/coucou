@@ -123,12 +123,15 @@ export interface IntegrationUpdate {
 }
 
 export type ChatContext =
-  | { kind: "file"; name: string; path: string }
+  | { kind: "file"; name: string; path: string; original: string }
   | { kind: "window"; appName: string; title: string; url?: string };
 
 export interface DroppedFile {
   name: string;
+  /** The inbox copy — what the assistant reads. */
   path: string;
+  /** The file the user dropped: the one the editor is allowed to write to. */
+  original: string;
   size: number;
 }
 

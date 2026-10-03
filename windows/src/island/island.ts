@@ -167,6 +167,12 @@ export class Island {
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       requestHeight: () => this.animateGeometry(false),
+      // Both flags, because they are read by different code: the state machine
+      // schedules the auto-close, the countdown bar reads State.isPinned.
+      setPin: (pinned: boolean) => {
+        this.fsm.pinned = pinned;
+        State.isPinned = pinned;
+      },
       blip: () => Sound.play("blip"),
     };
 
@@ -188,7 +194,12 @@ export class Island {
     this.uploadCanvas = new UploadCanvas({
       ask: () => {
         State.promptContext = State.droppedFile
-          ? { kind: "file", name: State.droppedFile.name, path: State.droppedFile.path }
+          ? {
+              kind: "file",
+              name: State.droppedFile.name,
+              path: State.droppedFile.path,
+              original: State.droppedFile.original,
+            }
           : null;
         this.setView("prompt");
       },
@@ -389,8 +400,11 @@ export class Island {
    */
   private swallow(path: string) {
     const name = path.split(/[\\/]/).pop() || "file";
-    State.droppedFile = { name, path };
-    State.promptContext = { kind: "file", name, path };
+    // Before the copy lands, the drop path is the best guess at the original;
+    // it is replaced below. `path` is both for now because the ingest is what
+    // moves the file — nothing reads it in between.
+    State.droppedFile = { name, path, original: path };
+    State.promptContext = { kind: "file", name, path, original: path };
     State.chatHistory = [];
     void Bridge.chatReset();
 
@@ -409,8 +423,14 @@ export class Island {
 
     void Bridge.ingestFile(path)
       .then((file) => {
-        State.droppedFile = { name: file.name, path: file.path };
-        State.promptContext = { kind: "file", name: file.name, path: file.path };
+        // `original` is the whole point: the copy is read, the original edited.
+        State.droppedFile = { name: file.name, path: file.path, original: file.original };
+        State.promptContext = {
+          kind: "file",
+          name: file.name,
+          path: file.path,
+          original: file.original,
+        };
         State.notify();
       })
       .catch((err) => {

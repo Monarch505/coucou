@@ -202,6 +202,10 @@ export function buildDiff(actions: ViewActions): ViewHost {
             class: "btn primary",
             text: State.runFailed ? "Close" : "Back to chat",
             onclick: () => {
+              // Nothing is waiting for an answer any more, so the island may close
+              // on its idle timer again. Without this the pin set when the card
+              // arrived would outlive it and the island would never auto-close.
+              actions.setPin(false);
               State.runOutput = null;
               State.runFailed = false;
               State.notify();
